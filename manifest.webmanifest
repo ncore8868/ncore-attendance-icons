@@ -1,7 +1,7 @@
 {
   "id": "./",
-  "name": "N-CORE 현장 출퇴근",
-  "short_name": "N-CORE 출퇴근",
+  "name": "출퇴근 기록기",
+  "short_name": "출퇴근 기록기",
   "description": "N-CORE 현장 출퇴근 및 현장 사진 등록",
   "lang": "ko-KR",
   "start_url": "./",
