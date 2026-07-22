@@ -1,17 +1,10 @@
-출퇴근 기록기 GitHub 전체 업로드 세트
+출퇴근 기록기 아이폰 자동로그인 복구 GitHub 파일
 
-압축을 풀고 나온 파일을 출퇴근 앱 GitHub 저장소 최상단에 전부 업로드하세요.
+1. 이 폴더 안의 파일을 GitHub 저장소 최상단에 전부 업로드
+2. 기존 파일과 같은 이름으로 덮어쓰기
+3. Commit changes
+4. GitHub Pages 반영 후 아이폰 기존 홈 화면 앱 삭제
+5. Safari에서 GitHub Pages 주소를 다시 열고 홈 화면에 추가
 
-변경 사항
-- manifest.webmanifest name: 출퇴근 기록기
-- manifest.webmanifest short_name: 출퇴근 기록기
-- index.html title: 출퇴근 기록기
-- 서비스워커 캐시: v2 → v3
-- 최신 아이콘 4종 포함
-- 기존 기능과 디자인은 변경하지 않음
-
-업로드 후
-1. GitHub에서 Commit changes
-2. GitHub Pages 반영까지 잠시 기다리기
-3. 휴대전화의 기존 설치 앱 삭제
-4. 브라우저에서 페이지를 새로 열고 다시 설치
+캐시 버전: v4
+아이폰 홈 화면 앱에서 생성한 기기 식별값을 Apps Script에 전달합니다.

@@ -8,7 +8,7 @@
   <meta name="theme-color" content="#111111">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <meta name="apple-mobile-web-app-title" content="N-CORE 출퇴근">
+  <meta name="apple-mobile-web-app-title" content="출퇴근 기록기">
   <meta name="format-detection" content="telephone=no">
 
   <link rel="manifest" href="./manifest.webmanifest">
@@ -184,6 +184,19 @@
 
   <script>
     const ATTENDANCE_APP_URL = "https://script.google.com/macros/s/AKfycbxBxDbj0hBwruoN4_0mTajPshXbkWuSCUt34lP5rHKuVVpUA7kuSrJ5w5zG1FUD_5Fw/exec";
+    const DEVICE_TOKEN_KEY = 'ncore_attendance_launcher_device_v1';
+
+    function getOrCreateDeviceToken() {
+      let token = localStorage.getItem(DEVICE_TOKEN_KEY);
+      if (token) return token;
+
+      token = window.crypto && crypto.randomUUID
+        ? crypto.randomUUID()
+        : 'device-' + Date.now() + '-' + Math.random().toString(36).slice(2);
+
+      localStorage.setItem(DEVICE_TOKEN_KEY, token);
+      return token;
+    }
 
     function isStandalone() {
       return window.matchMedia('(display-mode: standalone)').matches ||
@@ -193,7 +206,12 @@
     function openAttendanceApp() {
       document.getElementById('installPanel').style.display = 'none';
       document.getElementById('launchingPanel').style.display = 'block';
-      window.location.replace(ATTENDANCE_APP_URL);
+
+      const deviceToken = getOrCreateDeviceToken();
+      const launchUrl = ATTENDANCE_APP_URL +
+        '#deviceToken=' + encodeURIComponent(deviceToken);
+
+      window.location.replace(launchUrl);
     }
 
     if ('serviceWorker' in navigator) {

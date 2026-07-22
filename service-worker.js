@@ -1,4 +1,4 @@
-const CACHE_NAME = 'ncore-attendance-launcher-v3';
+const CACHE_NAME = 'ncore-attendance-launcher-v4';
 
 const ASSETS = [
   './',
