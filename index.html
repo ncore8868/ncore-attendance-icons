@@ -12,9 +12,9 @@
   <meta name="format-detection" content="telephone=no">
 
   <link rel="manifest" href="./manifest.webmanifest">
-  <link rel="icon" type="image/png" sizes="192x192" href="./ncore-attendance-icon-192.png">
-  <link rel="icon" type="image/png" sizes="512x512" href="./ncore-attendance-icon-512.png">
-  <link rel="apple-touch-icon" sizes="180x180" href="./apple-touch-icon-180.png">
+  <link rel="icon" type="image/png" sizes="192x192" href="./icon-192.png">
+  <link rel="icon" type="image/png" sizes="512x512" href="./icon-512.png">
+  <link rel="apple-touch-icon" sizes="180x180" href="./apple-touch-icon.png">
 
   <style>
     :root {
@@ -42,6 +42,24 @@
     .wrap {
       width:min(100%,420px);
       text-align:center;
+    }
+    .brand-logo {
+      display:block;
+      width:min(310px, 76vw);
+      height:auto;
+      object-fit:contain;
+      margin:18px auto 6px;
+    }
+    .sr-only {
+      position:absolute;
+      width:1px;
+      height:1px;
+      padding:0;
+      margin:-1px;
+      overflow:hidden;
+      clip:rect(0,0,0,0);
+      white-space:nowrap;
+      border:0;
     }
     .icon {
       width:132px;
@@ -131,8 +149,9 @@
 </head>
 <body>
   <main class="wrap">
-    <img class="icon" src="./ncore-attendance-icon-512.png" alt="N-CORE 출퇴근 아이콘">
-    <h1>N-CORE 현장 출퇴근</h1>
+    <img class="icon" src="./icon-512.png" alt="N-CORE 출퇴근 아이콘">
+    <img class="brand-logo" src="./ncore-logo.png" alt="N-CORE 로고">
+    <h1 class="sr-only">N-CORE 현장 출퇴근</h1>
     <p class="sub">홈 화면에 추가한 뒤 아이콘으로 실행해 주세요.</p>
 
     <section id="installPanel" class="card">

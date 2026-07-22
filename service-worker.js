@@ -1,11 +1,14 @@
-const CACHE_NAME = 'ncore-attendance-launcher-v1';
+const CACHE_NAME = 'ncore-attendance-launcher-v2';
+
 const ASSETS = [
   './',
   './index.html',
   './manifest.webmanifest',
-  './ncore-attendance-icon-192.png',
-  './ncore-attendance-icon-512.png',
-  './apple-touch-icon-180.png'
+  './icon-192.png',
+  './icon-512.png',
+  './icon-maskable-512.png',
+  './apple-touch-icon.png',
+  './ncore-logo.png'
 ];
 
 self.addEventListener('install', event => {
@@ -18,7 +21,11 @@ self.addEventListener('install', event => {
 self.addEventListener('activate', event => {
   event.waitUntil(
     caches.keys().then(keys =>
-      Promise.all(keys.filter(key => key !== CACHE_NAME).map(key => caches.delete(key)))
+      Promise.all(
+        keys
+          .filter(key => key !== CACHE_NAME)
+          .map(key => caches.delete(key))
+      )
     )
   );
   self.clients.claim();
@@ -26,7 +33,10 @@ self.addEventListener('activate', event => {
 
 self.addEventListener('fetch', event => {
   if (event.request.method !== 'GET') return;
+
   event.respondWith(
-    caches.match(event.request).then(cached => cached || fetch(event.request))
+    caches.match(event.request).then(
+      cached => cached || fetch(event.request)
+    )
   );
 });

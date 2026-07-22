@@ -1,0 +1,38 @@
+N-CORE 출퇴근 앱 GitHub 전체 업로드 세트
+
+이 압축을 풀면 나오는 파일을 출퇴근 앱 GitHub 저장소 최상단에 전부 업로드하세요.
+
+업로드할 파일
+- index.html
+- manifest.webmanifest
+- service-worker.js
+- .nojekyll
+- icon-192.png
+- icon-512.png
+- icon-maskable-512.png
+- apple-touch-icon.png
+- ncore-logo.png
+
+GitHub에서 같은 이름이 있는 파일은 교체됩니다.
+기존의 긴 이름 파일은 더 이상 코드에서 사용하지 않습니다.
+- ncore-attendance-icon-192.png
+- ncore-attendance-icon-512.png
+- ncore-attendance-maskable-512.png
+- apple-touch-icon-180.png
+
+기존 긴 이름 파일이 저장소에 남아 있어도 앱 동작에는 영향이 없습니다.
+나중에 정리 목적으로 삭제해도 됩니다.
+
+적용 후
+1. GitHub Commit changes
+2. 1~3분 기다리기
+3. 휴대전화의 기존 홈 화면 아이콘 삭제
+4. 브라우저 캐시 새로고침 또는 새 탭으로 GitHub Pages 주소 접속
+5. 다시 홈 화면에 추가
+
+변경 내용
+- 앱 아이콘 파일명을 icon-192.png / icon-512.png 방식으로 통일
+- 안드로이드 maskable 아이콘 별도 적용
+- 아이폰 apple-touch-icon.png 적용
+- 설치 페이지 내부에 ncore-logo.png 표시
+- 서비스워커 캐시 v2로 갱신
