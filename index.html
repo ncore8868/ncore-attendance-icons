@@ -208,8 +208,9 @@
       document.getElementById('launchingPanel').style.display = 'block';
 
       const deviceToken = getOrCreateDeviceToken();
-      const launchUrl = ATTENDANCE_APP_URL +
-        '#deviceToken=' + encodeURIComponent(deviceToken);
+      const separator = ATTENDANCE_APP_URL.includes('?') ? '&' : '?';
+      const launchUrl = ATTENDANCE_APP_URL + separator +
+        'deviceToken=' + encodeURIComponent(deviceToken);
 
       window.location.replace(launchUrl);
     }
