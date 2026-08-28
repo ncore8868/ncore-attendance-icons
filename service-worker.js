@@ -7,7 +7,7 @@
  * - 앱스스크립트(script.google.com) 요청은 절대 손대지 않는다
  *************************************************************/
 
-const CACHE_NAME = "ncore-attendance-v5";
+const CACHE_NAME = "ncore-attendance-v6";
 
 const CORE_ASSETS = [
   "./",
