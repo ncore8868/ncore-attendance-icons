@@ -171,6 +171,25 @@
     }
     input:focus{outline:2px solid rgba(255,121,0,.55);outline-offset:1px}
 
+    select{
+      width:100%;
+      padding:15px 16px;
+      border-radius:14px;
+      border:1px solid var(--line);
+      background:#151517;
+      color:var(--white);
+      font-family:inherit;
+      font-size:17px;
+      appearance:none;
+      background-image:linear-gradient(45deg,transparent 50%,var(--muted) 50%),
+                       linear-gradient(135deg,var(--muted) 50%,transparent 50%);
+      background-position:calc(100% - 22px) 22px, calc(100% - 16px) 22px;
+      background-size:6px 6px,6px 6px;
+      background-repeat:no-repeat;
+    }
+    select:focus{outline:2px solid rgba(255,121,0,.55);outline-offset:1px}
+    select:disabled{opacity:.55}
+
     .step{display:flex;gap:10px;margin:9px 0;color:#d7d7da;font-size:14px;line-height:1.5}
     .num{
       flex:none;width:23px;height:23px;
@@ -286,8 +305,11 @@
       <label for="fPhone">전화번호</label>
       <input id="fPhone" type="tel" inputmode="numeric" autocomplete="tel" placeholder="010-0000-0000" maxlength="13">
 
+      <label for="fPin">PIN 4자리</label>
+      <input id="fPin" type="password" inputmode="numeric" autocomplete="off" maxlength="4" placeholder="워크보드에서 쓰시는 PIN">
+
       <button class="btn" id="btnRegister">등록하기</button>
-      <p class="foot">등록한 전화번호가 근태 기준이 됩니다. 기기를 바꿔도 같은 번호로 등록하면 기록이 이어집니다.</p>
+      <p class="foot">워크보드에서 쓰시는 번호와 PIN을 그대로 넣으시면 됩니다. 기기를 바꿔도 같은 번호로 등록하면 기록이 이어집니다.</p>
     </div>
   </section>
 
@@ -307,6 +329,9 @@
         <div class="time empty" id="boxIn"><em>출근</em><strong id="valIn">--:--</strong></div>
         <div class="time empty" id="boxOut"><em>퇴근</em><strong id="valOut">--:--</strong></div>
       </div>
+
+      <label for="selSite">근무 현장</label>
+      <select id="selSite"></select>
 
       <button class="btn" id="btnIn">출근 기록</button>
       <button class="btn out" id="btnOut">퇴근 기록</button>
@@ -341,10 +366,12 @@
  * N-CORE 출퇴근 PWA
  *
  * ★ API_URL 은 이미 입력되어 있습니다. 그대로 쓰시면 됩니다.
+ *   사람 정보는 워크보드 명부를 그대로 봅니다.
+ *   워크보드에서 승인받은 사람만 이 기기를 등록할 수 있습니다.
  *   앱스스크립트를 고칠 때는 "새 배포"가 아니라
  *   배포 관리 → 연필 → 버전: 새 버전 으로 올려야 이 주소가 유지됩니다.
  *************************************************************/
-const API_URL = "https://script.google.com/macros/s/AKfycbxjAsdKaGiChO8n74oNl6wvEk9IjBa5DEQTKLgCP84nkokRlpD4T6POU4AmHYcbU_ncPA/exec";
+const API_URL = "https://script.google.com/macros/s/AKfycby2OuQYxkHJUkeW0lxZLo3ROWxqfJxGkhXIyNmaNZG0wHkN0lgyKl_Idt2y6fnTGiDT7w/exec";
 
 /* 기존 설치 폰의 기기 식별값을 그대로 이어받는다. 절대 바꾸지 말 것 */
 const DEVICE_TOKEN_KEY = 'ncore_attendance_launcher_device_v1';
@@ -454,11 +481,46 @@ function paint(){
 
   $('photoCount').textContent = state.photos || 0;
 
+  paintSites();
+
   $('btnIn').disabled = !!state.inTime;
   $('btnOut').disabled = !state.inTime || !!state.outTime;
 
   $('btnIn').textContent = state.inTime ? ('출근 완료 · ' + state.inTime) : '출근 기록';
   $('btnOut').textContent = state.outTime ? ('퇴근 완료 · ' + state.outTime) : '퇴근 기록';
+}
+
+/* 현장 목록을 채운다.
+   지난번에 고른 현장이 이미 골라진 채로 뜨므로,
+   같은 현장이면 출근 버튼만 누르면 된다.
+   출근을 찍은 뒤에는 바꿀 수 없게 잠근다. */
+function paintSites(){
+  const sel = $('selSite');
+  const list = (state && state.sites && state.sites.length)
+    ? state.sites
+    : [{ name:'사무실', folderId:'' }];
+
+  const want = (state && state.siteName) || '사무실';
+
+  sel.innerHTML = '';
+  list.forEach(function(one){
+    const opt = document.createElement('option');
+    opt.value = one.name;
+    opt.textContent = one.name;
+    if(one.name === want) opt.selected = true;
+    sel.appendChild(opt);
+  });
+
+  /* 목록에 없는 현장이 저장돼 있으면 (완료된 현장 등) 그것도 보여준다 */
+  if(want && !list.some(function(o){ return o.name === want; })){
+    const opt = document.createElement('option');
+    opt.value = want;
+    opt.textContent = want;
+    opt.selected = true;
+    sel.appendChild(opt);
+  }
+
+  sel.disabled = !!state.siteLocked;
 }
 
 function dateLabel(key){
@@ -499,15 +561,17 @@ async function doRegister(){
 
   const name = $('fName').value.trim();
   const phone = $('fPhone').value.trim();
+  const pin = $('fPin').value.replace(/\D/g,'');
 
   if(!name) return toast('이름을 입력해 주세요.', 'bad');
   if(phone.replace(/\D/g,'').length !== 11) return toast('전화번호 11자리를 입력해 주세요.', 'bad');
+  if(pin.length !== 4) return toast('PIN 4자리를 입력해 주세요.', 'bad');
 
   busy = true;
   cover(true, '등록하는 중입니다');
 
   try{
-    const res = await api({ action:'register', name:name, phone:phone });
+    const res = await api({ action:'register', name:name, phone:phone, pin:pin });
 
     if(!res.ok) { toast(res.message || '등록하지 못했습니다.', 'bad'); return; }
 
@@ -527,7 +591,12 @@ async function doCheck(kind){
   if(busy) return;
 
   const label = kind === 'checkin' ? '출근' : '퇴근';
-  if(!confirm(label + '을 기록할까요?')) return;
+  const siteName = (kind === 'checkin') ? $('selSite').value : '';
+
+  const ask = (kind === 'checkin')
+    ? (siteName + '에서 출근을 기록할까요?')
+    : '퇴근을 기록할까요?';
+  if(!confirm(ask)) return;
 
   const pos = await positionOrConfirm();
   if(pos === null) return;
@@ -538,6 +607,7 @@ async function doCheck(kind){
   try{
     const res = await api({
       action: kind,
+      siteName: siteName,
       lat: pos.lat, lng: pos.lng, acc: pos.acc
     });
 
@@ -624,6 +694,10 @@ $('fPhone').addEventListener('input', (e) => {
   e.target.value = d.length > 7 ? d.replace(/(\d{3})(\d{4})(\d{0,4})/, '$1-$2-$3')
               : d.length > 3 ? d.replace(/(\d{3})(\d{0,4})/, '$1-$2')
               : d;
+});
+
+$('fPin').addEventListener('keydown', function(e){
+  if(e.key === 'Enter' || e.keyCode === 13){ e.preventDefault(); doRegister(); }
 });
 
 $('btnRegister').addEventListener('click', doRegister);
