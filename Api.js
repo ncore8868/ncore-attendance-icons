@@ -53,6 +53,9 @@ const SITE_ATTENDANCE_FOLDER = '08_출퇴근사진';
 /* 현장사진이 쌓일 폴더 — UNION ONE > 02_출퇴근사진 */
 const API_PHOTO_ROOT_ID   = '12MU2WVkpG8jndDYFybuhivQNE0VQ_W7h';
 const API_MAX_PHOTO_BYTES = 8 * 1024 * 1024;
+const CACHE_SITES_ON = true;
+const SITE_CACHE_KEY = 'attendance_sites_v1';
+const SITE_CACHE_SECONDS = 600;
 
 
 /* ============================================================
@@ -130,19 +133,16 @@ function apiStatus_(token) {
 
   let inTime = '';
   let outTime = '';
+  let todaySite = '';
+  let todaySiteId = '';
 
   if (row) {
     const values = sheet.getRange(row, 1, 1, HEADERS.LOG.length).getValues()[0];
     inTime = formatTime_(values[3]);
     outTime = formatTime_(values[8]);
-  }
-
-  /* 오늘 이미 출근했다면 그때 고른 현장을 보여준다 */
-  let todaySite = '';
-  let todaySiteId = '';
-  if (row) {
-    todaySite = String(sheet.getRange(row, LOG_COL.현장명).getValue() || '').trim();
-    todaySiteId = String(sheet.getRange(row, LOG_COL.현장폴더ID).getValue() || '').trim();
+    /* 오늘 이미 출근했다면 그때 고른 현장을 보여준다 */
+    todaySite = String(values[LOG_COL.현장명 - 1] || '').trim();
+    todaySiteId = String(values[LOG_COL.현장폴더ID - 1] || '').trim();
   }
 
   let sites = [];
@@ -286,7 +286,9 @@ function apiCheck_(token, body, kind) {
 
     if (kind === 'in') {
       if (row) {
-        if (sheet.getRange(row, LOG_COL.출근시각).getValue()) {
+        const times = sheet.getRange(row, LOG_COL.출근시각, 1,
+          LOG_COL.퇴근시각 - LOG_COL.출근시각 + 1).getValues()[0];
+        if (times[0]) {
           return { ok: false, message: '오늘 출근 기록이 이미 있습니다.' };
         }
         sheet.getRange(row, LOG_COL.출근시각, 1, 5).setValues([[now, lat, lng, acc, map]]);
@@ -311,10 +313,15 @@ function apiCheck_(token, body, kind) {
       } catch (error) { /* 저장 실패는 넘어간다 */ }
 
     } else {
-      if (!row || !sheet.getRange(row, LOG_COL.출근시각).getValue()) {
+      if (!row) {
         return { ok: false, message: '오늘 출근 기록이 없습니다. 출근을 먼저 눌러 주세요.' };
       }
-      if (sheet.getRange(row, LOG_COL.퇴근시각).getValue()) {
+      const times = sheet.getRange(row, LOG_COL.출근시각, 1,
+        LOG_COL.퇴근시각 - LOG_COL.출근시각 + 1).getValues()[0];
+      if (!times[0]) {
+        return { ok: false, message: '오늘 출근 기록이 없습니다. 출근을 먼저 눌러 주세요.' };
+      }
+      if (times[LOG_COL.퇴근시각 - LOG_COL.출근시각]) {
         return { ok: false, message: '오늘 퇴근 기록이 이미 있습니다.' };
       }
 
@@ -322,8 +329,7 @@ function apiCheck_(token, body, kind) {
            .setValues([[now, lat, lng, acc, map, '퇴근완료', token, now]]);
 
       /* 근무시간을 숫자로 남긴다. 월별·연별 집계가 이 값을 더한다. */
-      const inValue = sheet.getRange(row, LOG_COL.출근시각).getValue();
-      sheet.getRange(row, LOG_COL.근무시간).setValue(workHours_(inValue, now));
+       sheet.getRange(row, LOG_COL.근무시간).setValue(workHours_(times[0], now));
     }
 
     apiTouchUser_(user.row, now);
@@ -372,10 +378,14 @@ function apiPhoto_(token, body) {
   /* 오늘 출근할 때 고른 현장 폴더에 넣는다 */
   const logSheet = apiSheet_(SHEET_LOG, HEADERS.LOG);
   const todayRow = apiTodayRow_(logSheet, dateKey, user.phone);
+  let siteValues = [];
+  if (todayRow) {
+    siteValues = logSheet.getRange(todayRow, LOG_COL.현장명, 1, 2).getValues()[0];
+  }
   const site = todayRow
     ? {
-        name: String(logSheet.getRange(todayRow, LOG_COL.현장명).getValue() || '').trim(),
-        folderId: String(logSheet.getRange(todayRow, LOG_COL.현장폴더ID).getValue() || '').trim()
+        name: String(siteValues[0] || '').trim(),
+        folderId: String(siteValues[1] || '').trim()
       }
     : { name: OFFICE_SITE_NAME, folderId: '' };
 
@@ -425,6 +435,15 @@ function apiEstimateSs_() {
 /** 출근할 때 고를 현장 목록.
     맨 위는 언제나 사무실이고, 그 아래로 견적에 등록된 현장이 붙습니다. */
 function apiSites_() {
+  if (CACHE_SITES_ON) {
+    try {
+      const cached = CacheService.getScriptCache().get(SITE_CACHE_KEY);
+      if (cached) return JSON.parse(cached);
+    } catch (error) {
+      // 캐시가 없거나 깨졌으면 아래의 기존 조회를 사용합니다.
+    }
+  }
+
   const list = [
     { name: OFFICE_SITE_NAME, folderId: '' },
     { name: ETC_SITE_NAME, folderId: '' }
@@ -479,6 +498,14 @@ function apiSites_() {
 
     list.push({ name: name, folderId: folderId });
     if (list.length >= 40) break;
+  }
+
+  if (CACHE_SITES_ON) {
+    try {
+      CacheService.getScriptCache().put(SITE_CACHE_KEY, JSON.stringify(list), SITE_CACHE_SECONDS);
+    } catch (error) {
+      // 캐시 저장 실패는 현장 목록 조회 결과에 영향을 주지 않습니다.
+    }
   }
 
   return list;
