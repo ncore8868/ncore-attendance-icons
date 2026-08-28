@@ -56,6 +56,9 @@ const API_MAX_PHOTO_BYTES = 8 * 1024 * 1024;
 const CACHE_SITES_ON = true;
 const SITE_CACHE_KEY = 'attendance_sites_v1';
 const SITE_CACHE_SECONDS = 600;
+let requestApiSs = null;
+let requestEstimateSs = null;
+let requestWorkboardSs = null;
 
 
 /* ============================================================
@@ -100,6 +103,9 @@ function apiOut_(obj) {
 
 function apiRun_(body) {
   try {
+    requestApiSs = null;
+    requestEstimateSs = null;
+    requestWorkboardSs = null;
     const action = String((body && body.action) || '').trim();
     const token  = String((body && body.deviceToken) || '').trim();
 
@@ -163,6 +169,28 @@ function apiStatus_(token) {
     sites: sites,
     siteName: todaySite || user.lastSiteName || OFFICE_SITE_NAME,
     siteId: todaySite ? todaySiteId : (user.lastSiteId || ''),
+    siteLocked: !!inTime
+  };
+}
+
+function apiKnownStatus_(user, dateKey, inValue, outValue, sites, siteName, siteId, photoCount) {
+  const inTime = formatTime_(inValue);
+  const outTime = formatTime_(outValue);
+
+  return {
+    ok: true,
+    registered: true,
+    name: user.name,
+    phone: user.phone,
+    date: dateKey,
+    inTime: inTime,
+    outTime: outTime,
+    status: inTime ? (outTime ? '퇴근완료' : '근무중') : '미출근',
+    photos: photoCount,
+    serverTime: Utilities.formatDate(new Date(), 'Asia/Seoul', 'HH:mm'),
+    sites: sites,
+    siteName: siteName || user.lastSiteName || OFFICE_SITE_NAME,
+    siteId: siteName ? (siteId || '') : (user.lastSiteId || ''),
     siteLocked: !!inTime
   };
 }
@@ -240,7 +268,16 @@ function apiRegister_(token, body) {
     lock.releaseLock();
   }
 
-  const result = apiStatus_(token);
+  const result = apiKnownStatus_(
+    { name: name, phone: phone },
+    todayKey_(),
+    '',
+    '',
+    apiSites_(),
+    '',
+    '',
+    0
+  );
   result.message = name + '님, 등록이 완료되었습니다.';
   return result;
 }
@@ -263,6 +300,7 @@ function apiCheck_(token, body, kind) {
 
   const dateKey = todayKey_();
   const now = new Date();
+  let checkInValue = '';
 
   /* 출근할 때 고른 현장. 보내온 이름이 실제 목록에 있는지 확인한다. */
   let site = { name: OFFICE_SITE_NAME, folderId: '' };
@@ -288,6 +326,7 @@ function apiCheck_(token, body, kind) {
       if (row) {
         const times = sheet.getRange(row, LOG_COL.출근시각, 1,
           LOG_COL.퇴근시각 - LOG_COL.출근시각 + 1).getValues()[0];
+        checkInValue = times[0];
         if (times[0]) {
           return { ok: false, message: '오늘 출근 기록이 이미 있습니다.' };
         }
@@ -318,6 +357,7 @@ function apiCheck_(token, body, kind) {
       }
       const times = sheet.getRange(row, LOG_COL.출근시각, 1,
         LOG_COL.퇴근시각 - LOG_COL.출근시각 + 1).getValues()[0];
+      checkInValue = times[0];
       if (!times[0]) {
         return { ok: false, message: '오늘 출근 기록이 없습니다. 출근을 먼저 눌러 주세요.' };
       }
@@ -338,7 +378,16 @@ function apiCheck_(token, body, kind) {
     lock.releaseLock();
   }
 
-  const result = apiStatus_(token);
+  const sitesForResult = apiSites_();
+  const result = apiKnownStatus_(
+    user, dateKey,
+    kind === 'in' ? now : checkInValue,
+    kind === 'out' ? now : '',
+    sitesForResult,
+    kind === 'in' ? site.name : user.lastSiteName,
+    kind === 'in' ? site.folderId : user.lastSiteId,
+    apiPhotoCount_(dateKey, user.phone)
+  );
   result.message = (kind === 'in')
     ? (site.name + ' 출근이 기록되었습니다.')
     : '퇴근이 기록되었습니다.';
@@ -378,14 +427,14 @@ function apiPhoto_(token, body) {
   /* 오늘 출근할 때 고른 현장 폴더에 넣는다 */
   const logSheet = apiSheet_(SHEET_LOG, HEADERS.LOG);
   const todayRow = apiTodayRow_(logSheet, dateKey, user.phone);
-  let siteValues = [];
+  let rowValues = [];
   if (todayRow) {
-    siteValues = logSheet.getRange(todayRow, LOG_COL.현장명, 1, 2).getValues()[0];
+    rowValues = logSheet.getRange(todayRow, 1, 1, HEADERS.LOG.length).getValues()[0];
   }
   const site = todayRow
     ? {
-        name: String(siteValues[0] || '').trim(),
-        folderId: String(siteValues[1] || '').trim()
+        name: String(rowValues[LOG_COL.현장명 - 1] || '').trim(),
+        folderId: String(rowValues[LOG_COL.현장폴더ID - 1] || '').trim()
       }
     : { name: OFFICE_SITE_NAME, folderId: '' };
 
@@ -408,7 +457,15 @@ function apiPhoto_(token, body) {
   apiTouchUser_(user.row, now);
   apiClearCache_();
 
-  const result = apiStatus_(token);
+  const result = apiKnownStatus_(
+    user, dateKey,
+    todayRow ? rowValues[LOG_COL.출근시각 - 1] : '',
+    todayRow ? rowValues[LOG_COL.퇴근시각 - 1] : '',
+    apiSites_(),
+    site.name,
+    site.folderId,
+    apiPhotoCount_(dateKey, user.phone)
+  );
   result.message = '사진이 등록되었습니다.';
   result.fileUrl = file.getUrl();
   return result;
@@ -420,6 +477,8 @@ function apiPhoto_(token, body) {
  * ========================================================== */
 
 function apiEstimateSs_() {
+  if (requestEstimateSs) return requestEstimateSs;
+
   const id = (function () {
     try { return String(PropertiesService.getScriptProperties().getProperty('ESTIMATE_ID') || '').trim(); }
     catch (error) { return ''; }
@@ -427,7 +486,10 @@ function apiEstimateSs_() {
 
   if (!id) return null;
 
-  try { return SpreadsheetApp.openById(id); }
+  try {
+    requestEstimateSs = SpreadsheetApp.openById(id);
+    return requestEstimateSs;
+  }
   catch (error) { return null; }
 }
 
@@ -450,14 +512,14 @@ function apiSites_() {
   ];
 
   const ss = apiEstimateSs_();
-  if (!ss) return list;
+  if (!ss) return apiCacheSites_(list);
 
   const sheet = ss.getSheetByName(ESTIMATE_LEDGER_SHEET);
-  if (!sheet) return list;
+  if (!sheet) return apiCacheSites_(list);
 
   const lastRow = sheet.getLastRow();
   const lastCol = sheet.getLastColumn();
-  if (lastRow < 2) return list;
+  if (lastRow < 2) return apiCacheSites_(list);
 
   const values = sheet.getRange(1, 1, lastRow, lastCol).getDisplayValues();
   const head = values[0].map(String);
@@ -500,6 +562,10 @@ function apiSites_() {
     if (list.length >= 40) break;
   }
 
+  return apiCacheSites_(list);
+}
+
+function apiCacheSites_(list) {
   if (CACHE_SITES_ON) {
     try {
       CacheService.getScriptCache().put(SITE_CACHE_KEY, JSON.stringify(list), SITE_CACHE_SECONDS);
@@ -507,7 +573,6 @@ function apiSites_() {
       // 캐시 저장 실패는 현장 목록 조회 결과에 영향을 주지 않습니다.
     }
   }
-
   return list;
 }
 
@@ -550,6 +615,8 @@ function apiRootFolder_() {
  * ========================================================== */
 
 function apiSs_() {
+  if (requestApiSs) return requestApiSs;
+
   const propId = (function () {
     try { return String(PropertiesService.getScriptProperties().getProperty('SHEET_ID') || '').trim(); }
     catch (error) { return ''; }
@@ -558,7 +625,8 @@ function apiSs_() {
   const useId = API_SPREADSHEET_ID || propId;
   if (!useId) throw new Error('근태 시트가 연결되지 않았습니다. 스크립트 속성 SHEET_ID 를 확인해 주세요.');
 
-  return SpreadsheetApp.openById(useId);
+  requestApiSs = SpreadsheetApp.openById(useId);
+  return requestApiSs;
 }
 
 
@@ -569,13 +637,16 @@ function apiSs_() {
  * ========================================================== */
 
 function apiWorkboardSs_() {
+  if (requestWorkboardSs) return requestWorkboardSs;
+
   const id = (function () {
     try { return String(PropertiesService.getScriptProperties().getProperty('WORKBOARD_ID') || '').trim(); }
     catch (error) { return ''; }
   })();
 
   if (!id) throw new Error('워크보드 시트가 연결되지 않았습니다. 스크립트 속성 WORKBOARD_ID 를 확인해 주세요.');
-  return SpreadsheetApp.openById(id);
+  requestWorkboardSs = SpreadsheetApp.openById(id);
+  return requestWorkboardSs;
 }
 
 
