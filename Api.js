@@ -62,6 +62,140 @@ let requestWorkboardSs = null;
 
 
 /* ============================================================
+ *  값 캐시 (2026-08-28)
+ *
+ *  status(앱 열기)는 직원 여섯 명이 아침저녁으로 부르는 길인데,
+ *  스프레드시트를 열고 시트 세 장을 읽느라 구글에 열 번 가까이 물었습니다.
+ *  실측 비용은 스프레드시트 열기 1~2초, 시트 읽기 한 번 0.15~1초입니다.
+ *
+ *  읽기만 하는 이 길을 CacheService 로 돌립니다.
+ *    (1) 시트마다 '번호표' 를 스크립트 속성에 하나씩 둔다
+ *    (2) 캐시 칸 이름 = 시트이름 + 번호표
+ *    (3) 요청에서 처음 읽을 때 getProperties() 1번 + getAll() 1번
+ *    (4) 시트에 쓰면 그 시트의 번호표만 새로 만든다
+ *
+ *  ★ 쓰기 경로(출근·퇴근·사진·등록)는 캐시를 절대 믿지 않습니다.
+ *    언제나 시트를 열어 줄을 찾고 씁니다. 잘못된 줄에 쓰는 것이
+ *    느린 것보다 훨씬 나쁘기 때문입니다.
+ *  ★ ATT_CACHE_ON = false 한 줄로 옛 방식으로 완전히 돌아갑니다.
+ * ========================================================== */
+
+const ATT_CACHE_ON = true;
+const ATT_CACHE_SECONDS = 21600;          // 6시간
+const ATT_CACHE_MAX_BYTES = 95000;        // 이보다 크면 담지 않고 옛 방식으로
+const ATT_TAIL_ROWS = 400;                // 계속 쌓이는 시트는 뒤에서 이만큼만
+
+let _attVer = null;                        // 요청당 속성 1회
+let _attGot = null;                        // 요청당 getAll 1회
+let _attVals = {};                         // 요청 안에서 두 번 만들지 않게
+
+/** 스크립트 속성을 요청당 한 번만 통째로 가져온다 */
+function attVerAll_() {
+  if (_attVer) return _attVer;
+  try { _attVer = PropertiesService.getScriptProperties().getProperties() || {}; }
+  catch (error) { _attVer = {}; }
+  return _attVer;
+}
+
+function attKey_(name) {
+  const v = attVerAll_()['V_' + name] || '0';
+  return 'attv|' + name + '|' + v;
+}
+
+/** 담아둔 것을 한 번에 꺼낸다 (시트 3장 + 현장목록을 getAll 한 번으로) */
+function attGetAll_() {
+  if (_attGot) return _attGot;
+  _attGot = {};
+  if (!ATT_CACHE_ON) return _attGot;
+  try {
+    const keys = [attKey_(SHEET_USERS), attKey_(SHEET_LOG), attKey_(SHEET_PHOTO), SITE_CACHE_KEY];
+    _attGot = CacheService.getScriptCache().getAll(keys) || {};
+  } catch (error) { _attGot = {}; }
+  return _attGot;
+}
+
+/** 시트에 쓴 뒤 부른다. 번호표를 새로 만들어 담아둔 값을 버린다.
+    1씩 올리지 않고 매번 새 값을 만든다 — 두 사람이 같은 순간에 저장해도 안전하다. */
+function attBump_(name) {
+  try {
+    PropertiesService.getScriptProperties()
+      .setProperty('V_' + name, String(new Date().getTime()) + Math.floor(Math.random() * 1000));
+  } catch (error) { /* 번호표를 못 바꾸면 캐시가 6시간 뒤 저절로 만료된다 */ }
+  delete _attVals[name];
+  _attVer = null;
+  _attGot = null;
+}
+
+/**
+ * 시트 값을 가져온다. { start: 첫 줄 번호, rows: [[...]], last: 마지막 줄 }
+ * start 는 rows[0] 이 시트의 몇 번째 줄인지를 뜻한다 (줄 번호를 잃지 않게).
+ */
+function attValues_(name, headers) {
+  if (_attVals[name]) return _attVals[name];
+
+  if (ATT_CACHE_ON) {
+    const raw = attGetAll_()[attKey_(name)];
+    if (raw) {
+      try {
+        const box = JSON.parse(raw);
+        box.rows = box.rows.map(attDecodeRow_);
+        _attVals[name] = box;
+        return box;
+      } catch (error) { /* 깨졌으면 아래에서 시트를 읽는다 */ }
+    }
+  }
+
+  const sheet = apiSheet_(name, headers);
+  const lastRow = sheet.getLastRow();
+  const width = headers.length;
+
+  let start = 2;
+  let rows = [];
+  if (lastRow >= 2) {
+    /* 계속 쌓이는 시트는 뒤에서 몇 줄만 읽는다.
+       줄 수가 시간을 만들지는 않지만, 캐시 한 칸(100KB)에 담기 위해서다. */
+    if (lastRow - 1 > ATT_TAIL_ROWS) start = lastRow - ATT_TAIL_ROWS + 1;
+    rows = sheet.getRange(start, 1, lastRow - start + 1, width).getValues();
+  }
+
+  const box = { start: start, rows: rows, last: lastRow };
+  _attVals[name] = box;
+
+  if (ATT_CACHE_ON) {
+    try {
+      const text = JSON.stringify({ start: start, last: lastRow, rows: rows.map(attEncodeRow_) });
+      if (attBytes_(text) <= ATT_CACHE_MAX_BYTES) {
+        CacheService.getScriptCache().put(attKey_(name), text, ATT_CACHE_SECONDS);
+      }
+    } catch (error) { /* 담지 못해도 값은 이미 있다 */ }
+  }
+  return box;
+}
+
+/* JSON 은 Date 를 글자로 바꿔버린다. 되살릴 수 있게 표시를 달아 담는다.
+   ★ 반드시 Date 객체로 되돌린다. 글자로 두면 시각 계산이 어긋난다. */
+function attEncodeRow_(row) {
+  return row.map(function (v) {
+    return (v instanceof Date) ? { __d: v.getTime() } : v;
+  });
+}
+function attDecodeRow_(row) {
+  return row.map(function (v) {
+    if (v && typeof v === 'object' && typeof v.__d === 'number') return new Date(v.__d);
+    return v;
+  });
+}
+function attBytes_(text) {
+  let n = 0;
+  for (let i = 0; i < text.length; i += 1) {
+    const c = text.charCodeAt(i);
+    n += c < 0x80 ? 1 : (c < 0x800 ? 2 : 3);
+  }
+  return n;
+}
+
+
+/* ============================================================
  *  입구
  * ========================================================== */
 
@@ -106,6 +240,7 @@ function apiRun_(body) {
     requestApiSs = null;
     requestEstimateSs = null;
     requestWorkboardSs = null;
+    _attVer = null; _attGot = null; _attVals = {};
     const action = String((body && body.action) || '').trim();
     const token  = String((body && body.deviceToken) || '').trim();
 
@@ -134,16 +269,16 @@ function apiStatus_(token) {
   if (!user) return { ok: true, registered: false };
 
   const dateKey = todayKey_();
-  const sheet = apiSheet_(SHEET_LOG, HEADERS.LOG);
-  const row = apiTodayRow_(sheet, dateKey, user.phone);
 
   let inTime = '';
   let outTime = '';
   let todaySite = '';
   let todaySiteId = '';
 
-  if (row) {
-    const values = sheet.getRange(row, 1, 1, HEADERS.LOG.length).getValues()[0];
+  /* 보여주기만 하는 길이므로 담아둔 값에서 읽는다 (시트를 열지 않는다).
+     예전에는 여기서 스프레드시트를 열고 시트를 세 번 읽었다. */
+  const values = apiTodayValues_(dateKey, user.phone);
+  if (values) {
     inTime = formatTime_(values[3]);
     outTime = formatTime_(values[8]);
     /* 오늘 이미 출근했다면 그때 고른 현장을 보여준다 */
@@ -263,6 +398,7 @@ function apiRegister_(token, body) {
       sheet.appendRow([now, name, phoneText, token, true, now, '']);
     }
 
+    attBump_(SHEET_USERS);
     apiClearCache_();
   } finally {
     lock.releaseLock();
@@ -315,11 +451,14 @@ function apiCheck_(token, body, kind) {
     }
   }
 
+  let lastSite = null;                 // 출근일 때만 채운다
+
   const lock = LockService.getScriptLock();
   lock.waitLock(20000);
 
   try {
     const sheet = apiSheet_(SHEET_LOG, HEADERS.LOG);
+    /* ★ 쓰기 직전이므로 담아둔 값이 아니라 시트에서 직접 줄을 찾는다 */
     const row = apiTodayRow_(sheet, dateKey, user.phone);
 
     if (kind === 'in') {
@@ -330,10 +469,22 @@ function apiCheck_(token, body, kind) {
         if (times[0]) {
           return { ok: false, message: '오늘 출근 기록이 이미 있습니다.' };
         }
-        sheet.getRange(row, LOG_COL.출근시각, 1, 5).setValues([[now, lat, lng, acc, map]]);
-        sheet.getRange(row, LOG_COL.상태).setValue('근무중');
-        sheet.getRange(row, LOG_COL.기기토큰, 1, 2).setValues([[token, now]]);
-        sheet.getRange(row, LOG_COL.현장명, 1, 2).setValues([[site.name, site.folderId]]);
+        /* 예전에는 같은 줄에 네 번 나눠 썼다 (구글 왕복 4회).
+           빈 칸을 그대로 살려 4번~18번을 한 번에 쓴다 (왕복 1회). */
+        const keep = sheet.getRange(row, LOG_COL.출근시각, 1,
+          LOG_COL.현장폴더ID - LOG_COL.출근시각 + 1).getValues()[0];
+        const put = keep.slice();
+        put[LOG_COL.출근시각   - LOG_COL.출근시각] = now;
+        put[LOG_COL.출근위도   - LOG_COL.출근시각] = lat;
+        put[LOG_COL.출근경도   - LOG_COL.출근시각] = lng;
+        put[LOG_COL.출근정확도 - LOG_COL.출근시각] = acc;
+        put[LOG_COL.출근지도   - LOG_COL.출근시각] = map;
+        put[LOG_COL.상태       - LOG_COL.출근시각] = '근무중';
+        put[LOG_COL.기기토큰   - LOG_COL.출근시각] = token;
+        put[LOG_COL.기록시각   - LOG_COL.출근시각] = now;
+        put[LOG_COL.현장명     - LOG_COL.출근시각] = site.name;
+        put[LOG_COL.현장폴더ID - LOG_COL.출근시각] = site.folderId;
+        sheet.getRange(row, LOG_COL.출근시각, 1, put.length).setValues([put]);
       } else {
         sheet.appendRow([
           dateKey, user.name, user.phone,
@@ -344,19 +495,20 @@ function apiCheck_(token, body, kind) {
         ]);
       }
 
-      /* 다음에 열면 이 현장이 이미 골라져 있게 한다 */
-      try {
-        apiSheet_(SHEET_USERS, HEADERS.USERS)
-          .getRange(user.row, USER_COL.마지막현장명, 1, 2)
-          .setValues([[site.name, site.folderId]]);
-      } catch (error) { /* 저장 실패는 넘어간다 */ }
+      /* 다음에 열면 이 현장이 이미 골라져 있게 한다.
+         '최근접속' 도 같은 줄이라 아래 apiTouchUser_ 와 합쳐 한 번에 쓴다. */
+      lastSite = [site.name, site.folderId];
 
     } else {
       if (!row) {
         return { ok: false, message: '오늘 출근 기록이 없습니다. 출근을 먼저 눌러 주세요.' };
       }
+      /* 출근시각(4)부터 근무시간(19)까지 한 번에 읽는다.
+         ★ 현장명·현장폴더ID(17,18)도 같이 읽어서 그대로 되돌려 놓는다.
+           퇴근할 때 site 는 기본값 '사무실' 이라, 안 읽고 쓰면
+           **아침에 고른 현장이 사무실로 덮여버린다.** */
       const times = sheet.getRange(row, LOG_COL.출근시각, 1,
-        LOG_COL.퇴근시각 - LOG_COL.출근시각 + 1).getValues()[0];
+        LOG_COL.근무시간 - LOG_COL.출근시각 + 1).getValues()[0];
       checkInValue = times[0];
       if (!times[0]) {
         return { ok: false, message: '오늘 출근 기록이 없습니다. 출근을 먼저 눌러 주세요.' };
@@ -365,14 +517,30 @@ function apiCheck_(token, body, kind) {
         return { ok: false, message: '오늘 퇴근 기록이 이미 있습니다.' };
       }
 
-      sheet.getRange(row, LOG_COL.퇴근시각, 1, 8)
-           .setValues([[now, lat, lng, acc, map, '퇴근완료', token, now]]);
-
-      /* 근무시간을 숫자로 남긴다. 월별·연별 집계가 이 값을 더한다. */
-       sheet.getRange(row, LOG_COL.근무시간).setValue(workHours_(times[0], now));
+      /* 퇴근시각(9)부터 근무시간(19)까지 한 번에 쓴다 (예전에는 두 번).
+         근무시간은 월별·연별 집계가 더하는 값이다. */
+      const outRow = times.slice(LOG_COL.퇴근시각 - LOG_COL.출근시각);   // 9~19 의 지금 값
+      const at = function (col) { return col - LOG_COL.퇴근시각; };
+      outRow[at(LOG_COL.퇴근시각)]   = now;
+      outRow[at(LOG_COL.퇴근위도)]   = lat;
+      outRow[at(LOG_COL.퇴근경도)]   = lng;
+      outRow[at(LOG_COL.퇴근정확도)] = acc;
+      outRow[at(LOG_COL.퇴근지도)]   = map;
+      outRow[at(LOG_COL.상태)]       = '퇴근완료';
+      outRow[at(LOG_COL.기기토큰)]   = token;
+      outRow[at(LOG_COL.기록시각)]   = now;
+      outRow[at(LOG_COL.근무시간)]   = workHours_(times[0], now);
+      /* 현장명·현장폴더ID 는 읽은 값 그대로 둔다 (건드리지 않는다) */
+      sheet.getRange(row, LOG_COL.퇴근시각, 1, outRow.length).setValues([outRow]);
     }
 
-    apiTouchUser_(user.row, now);
+    /* 사용자 줄은 한 번만 쓴다 ('최근접속' 과 '마지막현장' 을 합쳐서).
+       전화번호를 같이 넘겨 그 줄이 정말 이 사람인지 확인하게 한다. */
+    apiTouchUser_(user.row, now, lastSite, user.phone);
+
+    /* 시트를 고쳤으니 담아둔 값을 버린다 — 다음 status 가 새 값을 본다 */
+    attBump_(SHEET_LOG);
+    attBump_(SHEET_USERS);
     apiClearCache_();
   } finally {
     lock.releaseLock();
@@ -454,7 +622,9 @@ function apiPhoto_(token, body) {
     file.getUrl(), folder.getUrl(), '완료', site.name || OFFICE_SITE_NAME
   ]);
 
-  apiTouchUser_(user.row, now);
+  apiTouchUser_(user.row, now, null, user.phone);
+  attBump_(SHEET_PHOTO);
+  attBump_(SHEET_USERS);
   apiClearCache_();
 
   const result = apiKnownStatus_(
@@ -479,11 +649,7 @@ function apiPhoto_(token, body) {
 function apiEstimateSs_() {
   if (requestEstimateSs) return requestEstimateSs;
 
-  const id = (function () {
-    try { return String(PropertiesService.getScriptProperties().getProperty('ESTIMATE_ID') || '').trim(); }
-    catch (error) { return ''; }
-  })();
-
+  const id = String(attVerAll_()['ESTIMATE_ID'] || '').trim();
   if (!id) return null;
 
   try {
@@ -499,7 +665,10 @@ function apiEstimateSs_() {
 function apiSites_() {
   if (CACHE_SITES_ON) {
     try {
-      const cached = CacheService.getScriptCache().get(SITE_CACHE_KEY);
+      /* ★ 캐시도 따로 묻지 않는다. attGetAll_() 이 시트 세 장과 함께
+         현장 목록까지 getAll 한 번으로 가져왔다. */
+      const cached = attGetAll_()[SITE_CACHE_KEY]
+        || CacheService.getScriptCache().get(SITE_CACHE_KEY);
       if (cached) return JSON.parse(cached);
     } catch (error) {
       // 캐시가 없거나 깨졌으면 아래의 기존 조회를 사용합니다.
@@ -617,10 +786,9 @@ function apiRootFolder_() {
 function apiSs_() {
   if (requestApiSs) return requestApiSs;
 
-  const propId = (function () {
-    try { return String(PropertiesService.getScriptProperties().getProperty('SHEET_ID') || '').trim(); }
-    catch (error) { return ''; }
-  })();
+  /* ★ 속성을 따로 묻지 않는다. attVerAll_() 이 요청당 한 번 통째로 가져왔다.
+     getProperty 를 새로 부르면 구글 왕복이 하나 더 붙는다. */
+  const propId = String(attVerAll_()['SHEET_ID'] || '').trim();
 
   const useId = API_SPREADSHEET_ID || propId;
   if (!useId) throw new Error('근태 시트가 연결되지 않았습니다. 스크립트 속성 SHEET_ID 를 확인해 주세요.');
@@ -639,11 +807,7 @@ function apiSs_() {
 function apiWorkboardSs_() {
   if (requestWorkboardSs) return requestWorkboardSs;
 
-  const id = (function () {
-    try { return String(PropertiesService.getScriptProperties().getProperty('WORKBOARD_ID') || '').trim(); }
-    catch (error) { return ''; }
-  })();
-
+  const id = String(attVerAll_()['WORKBOARD_ID'] || '').trim();
   if (!id) throw new Error('워크보드 시트가 연결되지 않았습니다. 스크립트 속성 WORKBOARD_ID 를 확인해 주세요.');
   requestWorkboardSs = SpreadsheetApp.openById(id);
   return requestWorkboardSs;
@@ -712,18 +876,17 @@ function apiSheet_(name, headers) {
 
 
 function apiUserByToken_(token) {
-  const sheet = apiSheet_(SHEET_USERS, HEADERS.USERS);
-  const lastRow = sheet.getLastRow();
-  if (lastRow < 2) return null;
-
-  const values = sheet.getRange(2, 1, lastRow - 1, HEADERS.USERS.length).getValues();
+  /* 담아둔 값에서 찾는다. 없으면 attValues_ 안에서 시트를 읽는다.
+     row 는 시트의 실제 줄 번호다 (start 를 더해서 계산한다). */
+  const box = attValues_(SHEET_USERS, HEADERS.USERS);
+  const values = box.rows;
 
   for (let i = values.length - 1; i >= 0; i -= 1) {
     if (String(values[i][3] || '').trim() !== token) continue;
     if (values[i][4] === false) return null;
 
     return {
-      row: i + 2,
+      row: box.start + i,
       name: String(values[i][1] || '').trim(),
       phone: normalizePhone_(values[i][2]),
       lastSiteName: String(values[i][USER_COL.마지막현장명 - 1] || '').trim(),
@@ -735,6 +898,9 @@ function apiUserByToken_(token) {
 }
 
 
+/* 쓰기 전에 부른다. ★ 반드시 시트에서 직접 찾는다 —
+   담아둔 값이 낡아 있으면 남의 줄에 출퇴근을 쓸 수 있다.
+   느린 것은 참아도 줄이 섞이는 것은 못 참는다. */
 function apiTodayRow_(sheet, dateKey, phone) {
   const lastRow = sheet.getLastRow();
   if (lastRow < 2) return 0;
@@ -750,13 +916,22 @@ function apiTodayRow_(sheet, dateKey, phone) {
   return 0;
 }
 
+/* 보여주기만 할 때 쓴다. 담아둔 값에서 오늘 줄을 통째로 돌려준다.
+   줄을 못 찾으면 null. 시트를 열지 않는다. */
+function apiTodayValues_(dateKey, phone) {
+  const box = attValues_(SHEET_LOG, HEADERS.LOG);
+  const values = box.rows;
+  for (let i = values.length - 1; i >= 0; i -= 1) {
+    if (normalizeDate_(values[i][0]) !== dateKey) continue;
+    if (normalizePhone_(values[i][2]) !== phone) continue;
+    return values[i];
+  }
+  return null;
+}
+
 
 function apiPhotoCount_(dateKey, phone) {
-  const sheet = apiSheet_(SHEET_PHOTO, HEADERS.PHOTO);
-  const lastRow = sheet.getLastRow();
-  if (lastRow < 2) return 0;
-
-  const values = sheet.getRange(2, 1, lastRow - 1, 4).getValues();
+  const values = attValues_(SHEET_PHOTO, HEADERS.PHOTO).rows;
   let count = 0;
 
   values.forEach(function (row) {
@@ -769,9 +944,29 @@ function apiPhotoCount_(dateKey, phone) {
 }
 
 
-function apiTouchUser_(row, when) {
+/* '최근접속'(6) 과 '마지막현장명·ID'(8,9) 는 같은 줄이다.
+   예전에는 두 번 나눠 썼다. 6~9 를 한 번에 쓴다 (구글 왕복 1회).
+   현장을 안 넘기면 7~9 는 있던 값을 그대로 되돌려 놓는다. */
+function apiTouchUser_(row, when, lastSite, phone) {
   try {
-    apiSheet_(SHEET_USERS, HEADERS.USERS).getRange(row, 6).setValue(when);
+    const sheet = apiSheet_(SHEET_USERS, HEADERS.USERS);
+
+    /* 전화번호(3)부터 마지막현장ID(9)까지 한 번에 읽는다.
+       ★ 줄 번호는 담아둔 값에서 왔다. 그 줄의 전화번호가 정말 이 사람인지
+         확인하고 나서 쓴다. 아니면 아무것도 쓰지 않는다 —
+         남의 줄을 덮어쓰는 것보다 기록 한 번 빠지는 편이 낫다. */
+    const from = USER_COL.전화번호;
+    const width = USER_COL.마지막현장ID - from + 1;
+    const keep = sheet.getRange(row, from, 1, width).getValues()[0];
+
+    if (phone && normalizePhone_(keep[0]) !== normalizePhone_(phone)) return;
+
+    keep[USER_COL.최근접속 - from] = when;
+    if (lastSite) {
+      keep[USER_COL.마지막현장명 - from] = lastSite[0];
+      keep[USER_COL.마지막현장ID - from] = lastSite[1];
+    }
+    sheet.getRange(row, from, 1, width).setValues([keep]);
   } catch (error) {
     // 접속시간 기록 실패는 무시한다
   }
@@ -791,6 +986,170 @@ function apiClearCache_() {
   } catch (error) {
     // Code.gs 캐시 초기화 실패는 기록에 영향 없음
   }
+}
+
+
+/* ============================================================
+ *  캐시_확인 · 속도_재기   (편집기에서 직접 실행)
+ *
+ *  캐시를 넣고 나서 값이 한 글자라도 달라지지 않았는지 봅니다.
+ *  "느린 것은 참아도 값이 틀리는 것은 못 참는다" 가 기준입니다.
+ * ========================================================== */
+
+/**
+ * 담아둔 값과 시트를 직접 읽은 값이 같은지 칸 하나하나 견줍니다.
+ * 다른 칸이 하나라도 있으면 ATT_CACHE_ON 을 false 로 되돌리세요.
+ */
+function 캐시_확인() {
+  const 줄 = [];
+  let 검사 = 0, 다름 = 0;
+
+  const 시트들 = [
+    [SHEET_USERS, HEADERS.USERS],
+    [SHEET_LOG,   HEADERS.LOG],
+    [SHEET_PHOTO, HEADERS.PHOTO]
+  ];
+
+  시트들.forEach(function (one) {
+    const name = one[0], headers = one[1];
+
+    // ① 캐시를 통해 (담겨 있으면 담긴 값, 없으면 읽고 담는다)
+    _attVals = {}; _attGot = null; _attVer = null;
+    const 캐시본 = attValues_(name, headers);
+
+    // ② 캐시를 끄고 시트에서 직접
+    const sheet = apiSheet_(name, headers);
+    const lastRow = sheet.getLastRow();
+    let start = 2, 원본 = [];
+    if (lastRow >= 2) {
+      if (lastRow - 1 > ATT_TAIL_ROWS) start = lastRow - ATT_TAIL_ROWS + 1;
+      원본 = sheet.getRange(start, 1, lastRow - start + 1, headers.length).getValues();
+    }
+
+    if (캐시본.start !== start) {
+      다름 += 1;
+      줄.push('[' + name + '] 시작 줄이 다릅니다  캐시 ' + 캐시본.start + ' vs 시트 ' + start);
+    }
+    if (캐시본.rows.length !== 원본.length) {
+      다름 += 1;
+      줄.push('[' + name + '] 줄 수가 다릅니다  캐시 ' + 캐시본.rows.length + ' vs 시트 ' + 원본.length);
+    }
+
+    const n = Math.min(캐시본.rows.length, 원본.length);
+    for (let i = 0; i < n; i += 1) {
+      for (let j = 0; j < headers.length; j += 1) {
+        검사 += 1;
+        const a = 캐시본.rows[i][j];
+        const b = 원본[i][j];
+        const 같음 = (a instanceof Date && b instanceof Date)
+          ? (a.getTime() === b.getTime())
+          : (String(a) === String(b));
+        if (!같음) {
+          다름 += 1;
+          if (다름 <= 12) {
+            줄.push('[' + name + '] ' + (start + i) + '행 ' + headers[j] +
+                    '  캐시 "' + a + '"  vs  시트 "' + b + '"');
+          }
+        }
+      }
+    }
+    줄.push('[' + name + '] ' + 원본.length + '줄 × ' + headers.length + '칸 확인');
+  });
+
+  const 머리 = (다름 === 0)
+    ? '통과 — 검사 ' + 검사 + '칸, 다른 칸 0개'
+    : '★ 다른 칸 ' + 다름 + '개. ATT_CACHE_ON 을 false 로 되돌리세요';
+
+  const 결과 = 머리 + '\n\n' + 줄.join('\n');
+  Logger.log(결과);
+  try { SpreadsheetApp.getUi().alert('출퇴근 캐시 확인', 결과, SpreadsheetApp.getUi().ButtonSet.OK); } catch (e) {}
+  return 결과;
+}
+
+
+/**
+ * status(앱 열기)가 실제로 몇 ms 걸리는지, 구글에 몇 번 묻는지 잽니다.
+ * 차가운 캐시(처음)와 더운 캐시(두 번째)를 나란히 보여줍니다.
+ */
+function 속도_재기() {
+  const 줄 = [];
+
+  // 아무 기기토큰이나 하나 집는다
+  _attVals = {}; _attGot = null; _attVer = null;
+  const users = attValues_(SHEET_USERS, HEADERS.USERS).rows;
+  let token = '';
+  for (let i = users.length - 1; i >= 0; i -= 1) {
+    const t = String(users[i][3] || '').trim();
+    if (t) { token = t; break; }
+  }
+  if (!token) return '등록된 기기가 없어 잴 수 없습니다.';
+
+  function 한번(라벨) {
+    _attVals = {}; _attGot = null; _attVer = null;
+    const t0 = new Date().getTime();
+    const r = apiStatus_(token);
+    const ms = new Date().getTime() - t0;
+    줄.push(라벨 + '  ' + ms + 'ms   (' + (r && r.registered ? r.name : '?') + ')');
+    return ms;
+  }
+
+  // 캐시를 비우고 한 번 (차가운 상태)
+  try {
+    CacheService.getScriptCache().removeAll([
+      attKey_(SHEET_USERS), attKey_(SHEET_LOG), attKey_(SHEET_PHOTO), SITE_CACHE_KEY
+    ]);
+  } catch (e) {}
+  const 차가움 = 한번('차가운 캐시 (시트에서 읽음)');
+  const 더움1 = 한번('더운 캐시 1회차     ');
+  const 더움2 = 한번('더운 캐시 2회차     ');
+
+  줄.push('');
+  줄.push('평소 직원이 겪는 것은 더운 캐시 쪽입니다.');
+  줄.push('5분 트리거로 데워두면 차가운 경우를 거의 만나지 않습니다.');
+  줄.push('');
+  줄.push('줄인 폭  ' + 차가움 + 'ms  →  ' + Math.round((더움1 + 더움2) / 2) + 'ms');
+
+  const 결과 = 줄.join('\n');
+  Logger.log(결과);
+  try { SpreadsheetApp.getUi().alert('출퇴근 속도', 결과, SpreadsheetApp.getUi().ButtonSet.OK); } catch (e) {}
+  return 결과;
+}
+
+
+/**
+ * 5분마다 캐시를 데워둡니다.
+ * 이미 담겨 있으면 아무것도 하지 않습니다 (getAll 한 번, 약 50ms).
+ * 아침에 첫 직원이 차가운 캐시를 물어 2~3초 기다리는 일이 없게 합니다.
+ */
+function 캐시_데우기() {
+  _attVals = {}; _attGot = null; _attVer = null;
+  const got = attGetAll_();
+  const 없는것 = [];
+  if (!got[attKey_(SHEET_USERS)]) 없는것.push(SHEET_USERS);
+  if (!got[attKey_(SHEET_LOG)])   없는것.push(SHEET_LOG);
+  if (!got[attKey_(SHEET_PHOTO)]) 없는것.push(SHEET_PHOTO);
+  if (!got[SITE_CACHE_KEY])       없는것.push('현장목록');
+
+  if (!없는것.length) return '이미 담겨 있습니다';
+
+  attValues_(SHEET_USERS, HEADERS.USERS);
+  attValues_(SHEET_LOG, HEADERS.LOG);
+  attValues_(SHEET_PHOTO, HEADERS.PHOTO);
+  try { apiSites_(); } catch (e) {}
+  return '데웠습니다: ' + 없는것.join(', ');
+}
+
+
+/** 캐시 데우기 트리거를 겁니다 (한 번만 실행하면 됩니다) */
+function 캐시_트리거_설치() {
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (t.getHandlerFunction() === '캐시_데우기') ScriptApp.deleteTrigger(t);
+  });
+  ScriptApp.newTrigger('캐시_데우기').timeBased().everyMinutes(5).create();
+  const msg = '5분마다 캐시를 데웁니다.';
+  Logger.log(msg);
+  try { SpreadsheetApp.getUi().alert('출퇴근', msg, SpreadsheetApp.getUi().ButtonSet.OK); } catch (e) {}
+  return msg;
 }
 
 
