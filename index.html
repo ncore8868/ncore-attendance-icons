@@ -417,21 +417,33 @@ function toast(text, kind){
  */
 async function api(payload){
   const body = Object.assign({ deviceToken: deviceToken() }, payload);
-
-  const res = await fetch(API_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-    body: JSON.stringify(body),
-    redirect: 'follow',
-    cache: 'no-store'
-  });
-
-  const text = await res.text();
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 20000);
 
   try {
-    return JSON.parse(text);
+    const res = await fetch(API_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify(body),
+      redirect: 'follow',
+      cache: 'no-store',
+      signal: controller.signal
+    });
+
+    const text = await res.text();
+
+    try {
+      return JSON.parse(text);
+    } catch (err) {
+      throw new Error('서버 응답을 읽지 못했습니다. 배포 설정을 확인해 주세요.');
+    }
   } catch (err) {
-    throw new Error('서버 응답을 읽지 못했습니다. 배포 설정을 확인해 주세요.');
+    if (err && err.name === 'AbortError') {
+      throw new Error('서버 응답이 늦습니다. 인터넷 연결을 확인하고 다시 시도해 주세요.');
+    }
+    throw err;
+  } finally {
+    clearTimeout(timeout);
   }
 }
 
