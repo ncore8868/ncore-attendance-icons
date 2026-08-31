@@ -305,6 +305,30 @@
     }
     @keyframes spin{to{transform:rotate(360deg)}}
 
+    /* 내 기록 (v55) — 현장에서 보는 화면이라 글자를 15px 아래로 내리지 않는다 */
+    .monthbar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0 0 14px}
+    .monthbar strong{font-size:20px;letter-spacing:.01em}
+    .monthbar button{width:52px;height:52px;border-radius:14px;border:1px solid #3a3a40;
+      background:#1b1b20;color:#e9e9ee;font-size:18px;cursor:pointer}
+    .monthbar button:disabled{opacity:.35}
+    .logsum{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+    .logsum > div{background:#17171b;border:1px solid #2c2c33;border-radius:14px;padding:14px}
+    .logsum em{display:block;font-style:normal;font-size:15px;color:#9a9aa4;margin:0 0 4px}
+    .logsum strong{font-size:30px;line-height:1}
+    .logsum span{font-size:15px;color:#9a9aa4;margin-left:3px}
+    .logsites{margin:12px 0 0;font-size:15px;color:#c8c8d0;line-height:1.7}
+    /* 시각은 절대 접히지 않게 하고, 긴 현장명은 아랫줄로 내린다.
+       '박영희 상가' 처럼 이름이 길면 한 줄에서 시각이 두 줄로 접혔다 */
+    .logrow{display:grid;grid-template-columns:74px 1fr auto;gap:4px 10px;
+      padding:12px 0;border-bottom:1px solid #26262c}
+    .logrow:last-child{border-bottom:0}
+    .logrow .d{grid-row:1;font-size:15px;color:#9a9aa4;white-space:nowrap}
+    .logrow .t{grid-row:1;font-size:16px;white-space:nowrap}
+    .logrow .h{grid-row:1;font-size:15px;color:#9a9aa4;white-space:nowrap;text-align:right}
+    .logrow .s{grid-row:2;grid-column:2 / -1;font-size:15px;color:#9a9aa4}
+    .logrow.holiday .d{color:#ff8c8c}
+    .logempty{padding:22px 0;text-align:center;font-size:15px;color:#9a9aa4}
+
     @media (prefers-reduced-motion:reduce){
       *{animation:none!important;transition:none!important}
     }
@@ -384,8 +408,38 @@
       <button class="btn ghost" id="btnPhoto">사진 촬영 · 등록</button>
     </div>
 
+    <div class="card">
+      <p class="eyebrow">내 기록</p>
+      <div class="today"><b id="logHint">이번 달 출퇴근을 봅니다</b></div>
+      <button class="btn ghost" id="btnLog">내 기록 보기</button>
+    </div>
+
     <div class="foot">
       <button class="link" id="btnReload">새로고침</button>
+    </div>
+  </section>
+
+  <!-- ④ 내 기록 -->
+  <section id="viewLog" class="view">
+    <div class="card">
+      <div class="monthbar">
+        <button type="button" id="logPrev" aria-label="지난 달">◀</button>
+        <strong id="logYm">-</strong>
+        <button type="button" id="logNext" aria-label="다음 달">▶</button>
+      </div>
+      <div class="logsum">
+        <div><em>나온 날</em><strong id="logDays">0</strong><span>일</span></div>
+        <div><em>일한 시간</em><strong id="logHours">0</strong><span>시간</span></div>
+      </div>
+      <div id="logSites" class="logsites"></div>
+    </div>
+
+    <div class="card">
+      <div id="logRows"></div>
+    </div>
+
+    <div class="foot">
+      <button class="link" id="logBack">돌아가기</button>
     </div>
   </section>
 
@@ -434,7 +488,7 @@ function deviceToken(){
 
 /* ---------- 화면 전환 ---------- */
 function show(id){
-  ['viewGate','viewRegister','viewApp'].forEach(v => $(v).classList.toggle('on', v === id));
+  ['viewGate','viewRegister','viewApp','viewLog'].forEach(v => $(v).classList.toggle('on', v === id));
 }
 
 function cover(on, text){
@@ -829,6 +883,81 @@ function shrink(file, max = 1600, quality = 0.82){
     img.src = url;
   });
 }
+
+/* ---------- 내 기록 (v55) ----------
+ * 서버 왕복은 달을 넘길 때마다 1회. 받아온 달은 담아두어 다시 묻지 않는다.
+ */
+let logYm = null;
+const logCache = {};
+
+function ymShift(ym, n){
+  const y = Number(ym.slice(0,4)), m = Number(ym.slice(5,7)) + n;
+  const d = new Date(Date.UTC(y, m - 1, 1));
+  return d.getUTCFullYear() + '-' + String(d.getUTCMonth() + 1).padStart(2,'0');
+}
+
+function dayName(key){
+  const p = key.split('-');
+  const d = new Date(Date.UTC(Number(p[0]), Number(p[1]) - 1, Number(p[2])));
+  return ['일','월','화','수','목','금','토'][d.getUTCDay()];
+}
+
+async function openLog(ym){
+  logYm = ym || todayKey().slice(0,7);
+  show('viewLog');
+  paintLog(logCache[logYm] || null);
+
+  if(!logCache[logYm]){
+    try{
+      const res = await api({ action:'mylog', ym: logYm });
+      if(res.ok){ logCache[logYm] = res; paintLog(res); }
+      else toast(res.message || '기록을 불러오지 못했습니다.', 'bad');
+    }catch(err){ toast(err.message, 'bad'); }
+  }
+}
+
+function paintLog(data){
+  const p = logYm.split('-');
+  $('logYm').textContent = Number(p[0]) + '년 ' + Number(p[1]) + '월';
+  $('logNext').disabled = (logYm >= todayKey().slice(0,7));
+
+  if(!data){
+    $('logDays').textContent = '-';
+    $('logHours').textContent = '-';
+    $('logSites').textContent = '';
+    $('logRows').innerHTML = '<p class="logempty">불러오는 중입니다</p>';
+    return;
+  }
+
+  $('logDays').textContent = data.workDays;
+  $('logHours').textContent = data.hours;
+
+  /* 현장별로 며칠 나갔는지 — 한 줄로 */
+  $('logSites').textContent = (data.bySite || [])
+    .map(function(x){ return x.site + ' ' + x.days + '일'; }).join(' · ');
+
+  if(!data.days.length){
+    $('logRows').innerHTML = '<p class="logempty">이 달에는 기록이 없습니다</p>';
+    return;
+  }
+
+  $('logRows').innerHTML = data.days.map(function(r){
+    const d = dayName(r.date);
+    const time = r.inTime + (r.outTime ? (' → ' + r.outTime) : ' → 퇴근 안 찍음');
+    const hrs = r.minutes ? (Math.round(r.minutes / 6) / 10 + '시간') : '';
+    return '<div class="logrow' + ((d === '일' || d === '토') ? ' holiday' : '') + '">' +
+             '<span class="d">' + r.date.slice(5) + ' (' + d + ')</span>' +
+             '<span class="t">' + time + '</span>' +
+             '<span class="h">' + hrs + '</span>' +
+             (r.site ? '<span class="s">' + r.site + '</span>' : '') +
+           '</div>';
+  }).join('');
+}
+
+$('btnLog').addEventListener('click', () => openLog(null));
+$('logBack').addEventListener('click', () => show('viewApp'));
+$('logPrev').addEventListener('click', () => openLog(ymShift(logYm, -1)));
+$('logNext').addEventListener('click', () => { if(logYm < todayKey().slice(0,7)) openLog(ymShift(logYm, 1)); });
 
 /* ---------- 입력 보조 ---------- */
 $('fPhone').addEventListener('input', (e) => {

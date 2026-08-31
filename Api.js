@@ -252,6 +252,7 @@ function apiRun_(body) {
       case 'checkin':  return apiCheck_(token, body, 'in');
       case 'checkout': return apiCheck_(token, body, 'out');
       case 'photo':    return apiPhoto_(token, body);
+      case 'mylog':    return apiMyLog_(token, body);
       default:         return { ok: false, message: '알 수 없는 요청입니다.' };
     }
   } catch (error) {
@@ -328,6 +329,78 @@ function apiKnownStatus_(user, dateKey, inValue, outValue, sites, siteName, site
     siteId: siteName ? (siteId || '') : (user.lastSiteId || ''),
     siteLocked: !!inTime
   };
+}
+
+
+/**
+ * 내 기록 (v55) — 한 달치 출퇴근을 정리해서 돌려준다.
+ *
+ * 예전에는 이 앱이 **오늘 것만** 보여줬습니다.
+ * "이번 달 내가 며칠 나갔지" 를 볼 방법이 앱에 없어서
+ * 관리자에게 물어보거나 시트를 열어야 했습니다.
+ *
+ * ★ 서버 왕복 1회 · 시트 읽기 0회 (담아둔 값에서 꺼낸다).
+ *   담아둔 것은 뒤에서 400줄뿐이라, 그보다 오래된 달을 물으면
+ *   그때만 시트를 한 번 통째로 읽습니다 (자주 있는 일이 아닙니다).
+ */
+function apiMyLog_(token, body) {
+  const user = apiUserByToken_(token);
+  if (!user) {
+    return { ok: false, code: 'NOT_REGISTERED', message: '등록되지 않은 기기입니다.' };
+  }
+
+  const ym = String((body && body.ym) || '').trim().slice(0, 7) || todayKey_().slice(0, 7);
+  const box = attValues_(SHEET_LOG, HEADERS.LOG);
+  let rows = box.rows;
+
+  /* 담아둔 뒤쪽만으로는 그 달을 볼 수 없을 때만 시트를 통째로 읽는다 */
+  const oldest = rows.length ? normalizeDate_(rows[0][0]) : '';
+  if (box.start > 2 && oldest && ym < oldest.slice(0, 7)) {
+    const sheet = apiSheet_(SHEET_LOG, HEADERS.LOG);
+    const last = sheet.getLastRow();
+    rows = (last >= 2) ? sheet.getRange(2, 1, last - 1, HEADERS.LOG.length).getValues() : [];
+  }
+
+  const days = [];
+  const siteMin = {};
+  let minutes = 0;
+
+  rows.forEach(function (r) {
+    const date = normalizeDate_(r[0]);
+    if (date.slice(0, 7) !== ym) return;
+    if (normalizePhone_(r[LOG_COL.전화번호 - 1]) !== user.phone) return;
+
+    const inTime = formatTime_(r[LOG_COL.출근시각 - 1]);
+    if (!inTime) return;                       /* 출근을 안 찍은 줄은 세지 않는다 */
+    const outTime = formatTime_(r[LOG_COL.퇴근시각 - 1]);
+    const site = String(r[LOG_COL.현장명 - 1] || '').trim() || OFFICE_SITE_NAME;
+    const m = apiMinutes_(inTime, outTime);
+
+    minutes += m;
+    siteMin[site] = (siteMin[site] || 0) + 1;
+    days.push({ date: date, inTime: inTime, outTime: outTime, site: site, minutes: m });
+  });
+
+  days.sort(function (a, b) { return a.date < b.date ? 1 : (a.date > b.date ? -1 : 0); });
+
+  const bySite = Object.keys(siteMin)
+    .map(function (k) { return { site: k, days: siteMin[k] }; })
+    .sort(function (a, b) { return b.days - a.days; });
+
+  return {
+    ok: true, ym: ym, name: user.name,
+    days: days, workDays: days.length,
+    minutes: minutes, hours: Math.round(minutes / 6) / 10,
+    bySite: bySite
+  };
+}
+
+/** 두 시각(HH:mm) 사이의 분. 퇴근을 안 찍었으면 0 */
+function apiMinutes_(inTime, outTime) {
+  if (!inTime || !outTime) return 0;
+  const a = inTime.split(':'), b = outTime.split(':');
+  const m = (Number(b[0]) * 60 + Number(b[1])) - (Number(a[0]) * 60 + Number(a[1]));
+  return m > 0 ? m : 0;
 }
 
 
@@ -710,10 +783,25 @@ function apiSites_() {
     if (state === '취소' || state === '완료') continue;
 
     /* 계약된 현장만 목록에 띄운다.
-       고객 서명이 끝나면 '견적서 서명완료', 계약이 확정되면 '계약완료' 가 들어간다.
-       견적만 뽑아보고 만 현장은 이 칸이 비어 있어서 여기서 걸러진다. */
+       고객 서명이 끝나면 '견적서 서명완료' 가 들어간다 — 이때부터 목록에 나온다.
+       견적만 뽑아보고 만 현장은 이 칸이 비어 있어서 여기서 걸러진다.
+
+       ★ '계약완료' 는 견적 앱의 **공사완료 입력**에서만 들어갑니다
+         (견적코드.js · saveActualCost_ 한 곳뿐. 2026-08-31 확인).
+         즉 공사가 끝났다는 뜻이므로 여기서 뺍니다.
+
+         예전에는 이 줄이 없어서 **끝난 현장이 목록에서 영영 안 빠졌습니다.**
+         아침에 장갑 낀 손으로 고르는 드롭다운이 계속 길어졌고,
+         잘못 고르면 그날 사진이 통째로 엉뚱한 현장 폴더로 갔습니다
+         (출근을 찍으면 현장이 잠겨서 그날 안에는 고칠 수도 없습니다).
+
+       ▸ 견적대장의 '진행상태' 칸으로 거르지 않는 이유 —
+         그 칸에는 '현장견적 접수' 와 '견적작성 완료' 만 들어가고 '완료' 를 쓰는 코드가
+         아예 없습니다. 견적 앱에서 그 값을 바꾸면 미계약 목록·추가공사 기준 목록·
+         서명 현황 세 곳이 같이 틀어집니다. 그래서 계약상태 쪽을 봅니다. */
     const contract = colContract >= 0 ? String(row[colContract] || '').trim() : '';
     if (!contract) continue;
+    if (contract === '계약완료') continue;      // 공사완료 입력이 끝난 현장
 
     const folderId = colId >= 0 ? String(row[colId] || '').trim() : '';
     if (!folderId) continue;
