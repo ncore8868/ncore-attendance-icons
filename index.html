@@ -404,7 +404,7 @@
     <div class="card">
       <p class="eyebrow">현장 사진</p>
       <div class="today"><b>오늘 <span id="photoCount">0</span>장 등록</b></div>
-      <input id="filePhoto" type="file" accept="image/*" capture="environment" hidden>
+      <input id="filePhoto" type="file" accept="image/*" capture="environment" multiple hidden>
       <button class="btn ghost" id="btnPhoto">사진 촬영 · 등록</button>
     </div>
 
@@ -541,18 +541,44 @@ async function api(payload){
   }
 }
 
-/* ---------- 위치 ---------- */
+/* ---------- 위치 ----------
+ * ★ 예전에는 '저장해둔 위치는 절대 쓰지 말고 새로 잡아라'(maximumAge:0) 였습니다.
+ *   건물 안이나 지하 주차장이면 위성을 못 잡아 12초를 다 채우고 실패했고,
+ *   그러면 '위치 없이 기록할까요?' 확인 창이 한 번 더 떴습니다.
+ *   아침저녁 5초로 끝나야 할 일이 15초가 되던 가장 큰 이유였습니다.
+ *
+ *   같은 회사의 견적 앱은 이미 1분 이내의 위치를 다시 쓰고 있었습니다.
+ *   출퇴근만 매번 새로 잡고 있었습니다.
+ *
+ * 이제 2분 이내에 잡아 둔 위치가 있으면 그대로 씁니다.
+ * 아침에 현장에 도착해서 찍는 상황이라 2분 전 위치와 지금 위치가 다를 일이 없고,
+ * 사진을 여러 장 올릴 때도 위치를 다시 잡지 않습니다.
+ */
+const GPS_MAX_AGE = 120000;   // 2분 이내면 담아둔 위치를 그대로 쓴다
+const GPS_TIMEOUT = 6000;     // 6초에 못 잡으면 12초를 더 줘도 못 잡는다
+
+let lastFix = null;           // { at, pos } — 이 화면이 방금 잡아둔 위치
+
 function getPosition(){
+  /* 방금 잡아둔 것이 있으면 묻지도 않습니다 (기다리는 시간 0초) */
+  if(lastFix && (Date.now() - lastFix.at) < GPS_MAX_AGE) {
+    return Promise.resolve(lastFix.pos);
+  }
+
   return new Promise((resolve) => {
     if(!navigator.geolocation) return resolve(null);
     navigator.geolocation.getCurrentPosition(
-      (p) => resolve({
-        lat: Number(p.coords.latitude.toFixed(6)),
-        lng: Number(p.coords.longitude.toFixed(6)),
-        acc: Math.round(p.coords.accuracy)
-      }),
+      (p) => {
+        const pos = {
+          lat: Number(p.coords.latitude.toFixed(6)),
+          lng: Number(p.coords.longitude.toFixed(6)),
+          acc: Math.round(p.coords.accuracy)
+        };
+        lastFix = { at: Date.now(), pos: pos };
+        resolve(pos);
+      },
       () => resolve(null),
-      { enableHighAccuracy:true, timeout:12000, maximumAge:0 }
+      { enableHighAccuracy:true, timeout:GPS_TIMEOUT, maximumAge:GPS_MAX_AGE }
     );
   });
 }
@@ -822,35 +848,58 @@ async function doCheck(kind){
   }
 }
 
-async function doPhoto(file){
-  if(busy || !file) return;
+/**
+ * 사진을 올립니다.
+ *
+ * ★ 예전에는 한 번에 한 장씩만 올라갔고, **장마다 위치를 새로 잡았습니다.**
+ *   세 장이면 위치를 세 번 잡느라 그만큼 더 기다렸습니다.
+ *   이제 여러 장을 한 번에 고를 수 있고, 위치는 맨 앞에서 한 번만 잡습니다.
+ */
+async function doPhoto(files){
+  const list = Array.prototype.slice.call(files || []);
+  if(busy || !list.length) return;
 
-  const pos = await positionOrConfirm();
+  const pos = await positionOrConfirm();   // ★ 위치는 여기서 한 번만
   if(pos === null) return;
 
   busy = true;
-  cover(true, '사진을 올리는 중입니다');
+  let done = 0;
 
   try{
-    const shrunk = await shrink(file);
+    for(let i = 0; i < list.length; i++){
+      cover(true, list.length > 1
+        ? ('사진을 올리는 중입니다 · ' + (i + 1) + ' / ' + list.length)
+        : '사진을 올리는 중입니다');
 
-    const res = await api({
-      action:'photo',
-      fileName: file.name || '현장사진.jpg',
-      mimeType: 'image/jpeg',
-      data: shrunk,
-      lat: pos.lat, lng: pos.lng, acc: pos.acc
-    });
+      const shrunk = await shrink(list[i]);
 
-    if(!res.ok){ toast(res.message || '사진을 등록하지 못했습니다.', 'bad'); return; }
+      const res = await api({
+        action:'photo',
+        fileName: list[i].name || '현장사진.jpg',
+        mimeType: 'image/jpeg',
+        data: shrunk,
+        lat: pos.lat, lng: pos.lng, acc: pos.acc
+      });
 
-    writeSeq++;
-    state = res;
-    paint();
-    saveSnap();
-    toast(res.message, 'good');
+      if(!res.ok){
+        toast(res.message || '사진을 등록하지 못했습니다.', 'bad');
+        break;
+      }
+
+      writeSeq++;
+      state = res;
+      done++;
+      paint();
+      saveSnap();
+    }
+
+    if(done){
+      toast(done > 1 ? ('사진 ' + done + '장이 등록되었습니다.') : '사진이 등록되었습니다.', 'good');
+    }
   }catch(err){
-    toast('사진을 등록하지 못했습니다. 다시 시도해 주세요.', 'bad');
+    toast(done
+      ? ('사진 ' + done + '장만 올라갔습니다. 나머지는 다시 시도해 주세요.')
+      : '사진을 등록하지 못했습니다. 다시 시도해 주세요.', 'bad');
   }finally{
     busy = false;
     cover(false);
@@ -975,7 +1024,7 @@ $('btnRegister').addEventListener('click', doRegister);
 $('btnIn').addEventListener('click', () => doCheck('checkin'));
 $('btnOut').addEventListener('click', () => doCheck('checkout'));
 $('btnPhoto').addEventListener('click', () => $('filePhoto').click());
-$('filePhoto').addEventListener('change', (e) => doPhoto(e.target.files[0]));
+$('filePhoto').addEventListener('change', (e) => doPhoto(e.target.files));
 $('btnReload').addEventListener('click', () => refresh(false));
 
 /* 앱으로 되돌아왔을 때 — 조용히 갱신한다.
