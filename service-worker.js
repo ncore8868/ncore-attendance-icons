@@ -16,7 +16,7 @@
  *   장갑 낀 손으로 아침에 5초 안에 찍어야 하는 앱입니다.
  *************************************************************/
 
-const CACHE_NAME = "ncore-attendance-v12";
+const CACHE_NAME = "ncore-attendance-v13";
 
 /* 캐시가 있을 때 네트워크를 기다려주는 시간 */
 const NET_WAIT_MS = 2500;
