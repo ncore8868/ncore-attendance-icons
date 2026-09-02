@@ -545,7 +545,7 @@ const API_URL = "https://script.google.com/macros/s/AKfycby2OuQYxkHJUkeW0lxZLo3R
 /* ★ 판 번호 — 화면을 고쳐 올릴 때마다 0.01 씩 올리세요.
    본 화면 맨 아래에 그대로 나옵니다. 새 것이 올라갔는지 눈으로 확인하는 자리입니다.
    (견적 앱의 APP_VERSION 과 같은 역할입니다) */
-const APP_VERSION = '1.00';
+const APP_VERSION = '1.01';
 
 /* 기존 설치 폰의 기기 식별값을 그대로 이어받는다. 절대 바꾸지 말 것 */
 const DEVICE_TOKEN_KEY = 'ncore_attendance_launcher_device_v1';
@@ -711,8 +711,13 @@ function paint(){
   $('serverTime').textContent = (state.serverTime && !state.__snap) ? ('현재 ' + state.serverTime) : '';
 
   const badge = $('statusBadge');
-  badge.textContent = state.status;
-  badge.className = 'badge ' + (state.status === '퇴근완료' ? 'done' : state.status === '근무중' ? 'work' : 'none');
+  /* ★ 오늘 휴가면 그대로 알려 준다 (2026-09-02).
+     승인까지 받은 휴가인데 '미출근' 이라고 떠 있으면 사람이 불안합니다.
+     ★ **출근 단추는 그대로 살려 둡니다** — 휴가여도 나오는 날이 있습니다. */
+  badge.textContent = (!state.inTime && state.leave) ? state.leave : state.status;
+  badge.className = 'badge ' + (state.status === '퇴근완료' ? 'done'
+    : state.status === '근무중' ? 'work'
+    : (state.leave ? 'work' : 'none'));
 
   $('valIn').textContent = state.inTime || '--:--';
   $('valOut').textContent = state.outTime || '--:--';
@@ -985,8 +990,10 @@ async function flushQueue(){
         continue;
       }
 
-      /* ④ 다시 보내도 소용없는 거절 (출근을 안 찍고 퇴근을 누른 경우 등) */
-      if(res && res.code === 'NO_CHECKIN'){
+      /* ④ 다시 보내도 소용없는 거절 (출근을 안 찍고 퇴근을 누른 경우 등)
+         ★ LOCKED — PIN 을 여러 번 틀려 잠깐 잠긴 것입니다 (2026-09-02).
+           다시 보내도 똑같이 막히므로 보류함에서 빼고 그대로 알립니다. */
+      if(res && (res.code === 'NO_CHECKIN' || res.code === 'LOCKED')){
         queueDrop(item.id);
         toast(res.message, 'bad');
         await refresh(true);
